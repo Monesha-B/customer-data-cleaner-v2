@@ -1,6 +1,2 @@
 line,ID,name,email,reason
 3,2,Amit,,missing email
-5,2,Amit,,missing email; duplicate ID
-6,4,Ravi,ravi@@example,invalid email format
-7,5,Priya,   ,missing email
-8,1,Shreya,shreya@example.com,duplicate ID

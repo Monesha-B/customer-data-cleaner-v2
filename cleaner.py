@@ -1,5 +1,7 @@
+import argparse
 import csv
 import os
+import sqlite3
 import sys
 
 REQUIRED_FIELDS = ["ID", "name", "email"]
@@ -15,6 +17,12 @@ HEADER_ALIASES = {
 }
 
 
+class MissingColumnsError(Exception):
+    """Raised when the file has no column for a required field."""
+
+
+# ---------- headers ----------
+
 def normalize_header(header):
     """Lowercase, trim, and remove '-', '_' and spaces."""
     return (
@@ -26,21 +34,56 @@ def normalize_header(header):
     )
 
 
+def analyze_headers(fieldnames):
+    """Look at the file's header row.
+
+    Returns (recognized, ignored, duplicates, missing):
+      recognized - {original header: standard name}
+      ignored    - headers we don't know
+      duplicates - headers that map to a name already taken (first one wins)
+      missing    - required standard names with no column at all
+    """
+    recognized = {}
+    ignored = []
+    duplicates = []
+
+    for header in fieldnames or []:
+        standard = HEADER_ALIASES.get(normalize_header(header))
+        if standard is None:
+            ignored.append(header)
+        elif standard in recognized.values():
+            duplicates.append(header)
+        else:
+            recognized[header] = standard
+
+    missing = [f for f in REQUIRED_FIELDS if f not in recognized.values()]
+    return recognized, ignored, duplicates, missing
+
+
 def map_record(record):
-    """Rename a row's keys to the standard names. Unknown columns are ignored."""
+    """Rename a row's keys to the standard names.
+
+    Unknown columns are ignored. If two columns map to the same
+    standard name, the first one wins.
+    """
     mapped = {}
     for key, value in record.items():
         if key is None:  # DictReader uses None for extra values with no header
             continue
         standard = HEADER_ALIASES.get(normalize_header(key))
-        if standard:
+        if standard and standard not in mapped:
             mapped[standard] = value
     return mapped
 
 
+# ---------- reading and validating ----------
+
 def read_customers(path):
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    """Return (fieldnames, rows). 'utf-8-sig' strips Excel's hidden BOM."""
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        return reader.fieldnames, rows
 
 
 def validate_record(record, seen_ids):
@@ -86,6 +129,8 @@ def clean_customers(records):
     return valid, invalid
 
 
+# ---------- writing ----------
+
 def write_csv(path, rows, fieldnames):
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -93,28 +138,121 @@ def write_csv(path, rows, fieldnames):
         writer.writerows(rows)
 
 
-def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else "data/customers.csv"
-    os.makedirs("output", exist_ok=True)
+def load_into_db(db_path, records):
+    """Insert valid records into a SQLite table. Re-running updates, never duplicates."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS customers ("
+            "id TEXT PRIMARY KEY, "
+            "name TEXT NOT NULL, "
+            "email TEXT NOT NULL)"
+        )
+        for record in records:
+            conn.execute(
+                "INSERT INTO customers (id, name, email) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "name = excluded.name, email = excluded.email",
+                (
+                    record["ID"].strip(),
+                    record["name"].strip(),
+                    record["email"].strip(),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(records)
+
+
+# ---------- putting it together ----------
+
+def process_file(path, output_dir="output", db_path=None):
+    """Read, map, validate, split, write. Returns a summary dict."""
+    fieldnames, raw_rows = read_customers(path)
+    recognized, ignored, duplicates, missing = analyze_headers(fieldnames)
+
+    if missing:
+        raise MissingColumnsError(
+            "file is missing required column(s): " + ", ".join(missing)
+        )
 
     records = []
-    for raw in read_customers(path):
+    for raw in raw_rows:
         records.append(map_record(raw))
 
     valid, invalid = clean_customers(records)
 
-    write_csv("output/valid_customers.csv", valid, REQUIRED_FIELDS)
+    os.makedirs(output_dir, exist_ok=True)
+    write_csv(os.path.join(output_dir, "valid_customers.csv"), valid, REQUIRED_FIELDS)
     write_csv(
-        "output/invalid_customers.csv",
+        os.path.join(output_dir, "invalid_customers.csv"),
         invalid,
         ["line"] + REQUIRED_FIELDS + ["reason"],
     )
 
-    print(f"Valid: {len(valid)}")
-    print(f"Invalid: {len(invalid)}")
-    for row in invalid:
-        print(f"  line {row['line']}: ID {row.get('ID')} ({row.get('name')}): {row['reason']}")
+    loaded = None
+    if db_path:
+        loaded = load_into_db(db_path, valid)
+
+    return {
+        "valid": valid,
+        "invalid": invalid,
+        "ignored": ignored,
+        "duplicates": duplicates,
+        "loaded": loaded,
+    }
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Clean a customer CSV file.")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default="data/customers.csv",
+        help="CSV file to clean (default: data/customers.csv)",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="SQLite file to load the valid records into",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    try:
+        result = process_file(args.path, db_path=args.db)
+    except FileNotFoundError:
+        print(f"Error: file not found: {args.path}")
+        return 1
+    except MissingColumnsError as err:
+        print(f"Error: {err}")
+        return 1
+
+    if result["ignored"]:
+        print("Warning: ignored columns: " + ", ".join(result["ignored"]))
+    if result["duplicates"]:
+        print(
+            "Warning: duplicate columns skipped (first one wins): "
+            + ", ".join(result["duplicates"])
+        )
+
+    print(f"Valid: {len(result['valid'])}")
+    print(f"Invalid: {len(result['invalid'])}")
+    for row in result["invalid"]:
+        print(
+            f"  line {row['line']}: ID {row.get('ID')} "
+            f"({row.get('name')}): {row['reason']}"
+        )
+
+    if result["loaded"] is not None:
+        print(f"Loaded {result['loaded']} valid record(s) into {args.db}")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
