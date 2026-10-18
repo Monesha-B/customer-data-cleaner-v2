@@ -1,101 +1,192 @@
-# Customer Data Cleaner
+# Customer Data Cleaner V2
 
-A Python tool that reads a messy customer CSV, checks every record against validation rules, and splits the data into a valid file and an invalid file. Every rejected record gets a plain-English reason and its line number in the original file.
+A Python project that cleans customer CSV files, identifies invalid records, handles inconsistent column headers, and optionally stores valid customer records in a SQLite database.
 
-## The problem
+## Features
 
-Companies receive customer files from many sources, and the data is rarely clean. Missing emails, malformed emails, and repeated IDs can break an import or corrupt a database. Someone has to find the bad rows before the data is loaded.
+- **CSV processing:** Reads customer data from CSV files.
+- **Header normalization:** Supports alternative column names such as `Customer ID`, `Full Name`, and `E-MAIL`.
+- **Data validation:** Checks for missing IDs, names, and emails, as well as invalid email formats.
+- **Duplicate detection:** Identifies repeated customer IDs.
+- **Error reporting:** Reports invalid records with line numbers and reasons.
+- **CSV output:** Separates valid and invalid records into different files.
+- **SQLite integration:** Optionally loads valid records into a database.
+- **Command-line interface:** Accepts input files and database options.
+- **Automated testing:** Uses `pytest` to verify functionality.
 
-## How it works
+## Project Structure
 
-```
-CSV file -> Read -> Check each record -> Separate -> Report
-```
-
-1. **Read** the CSV into a list of records.
-2. **Check** each record against the rules below.
-3. **Separate** records into valid and invalid.
-4. **Report** every rejection with its line number and all of its reasons.
-
-## Validation rules
-
-| Rule | Reason shown |
-|---|---|
-| ID, name, or email is empty (spaces only counts as empty) | `missing ID`, `missing name`, `missing email` |
-| Email does not have exactly one `@`, text before it, and a `.` after it | `invalid email format` |
-| ID already appeared on an earlier line | `duplicate ID` |
-
-A record can have several reasons, joined with `;`.
-
-## Design decisions
-
-- **All reasons are reported, not just the first.** A reviewer can fix everything in one pass instead of re-running the tool repeatedly.
-- **Any repeated ID is a duplicate, even if the first row was rejected.** An ID should be unique, so seeing it twice is a data problem someone needs to know about.
-- **Spaces-only counts as missing.** Values are trimmed before checking, so `"   "` is treated as empty.
-- **Line numbers in the invalid report.** Without them, identical-looking rows cannot be told apart.
-- **Plain Python and the built-in `csv` module.** No extra libraries are needed for the core logic.
-- **Validation lives in one function that returns a list of reasons.** An empty list means valid. This keeps the logic testable.
-
-## Failure cases tested
-
-Run against `data/customers.csv`:
-
-| Line | Data | Result | Reason |
-|---|---|---|---|
-| 2 | 1, Shreya | Valid | |
-| 3 | 2, Amit, (empty) | Invalid | missing email |
-| 4 | 3, Neha | Valid | |
-| 5 | 2, Amit, (empty) | Invalid | missing email; duplicate ID |
-| 6 | 4, Ravi, `ravi@@example` | Invalid | invalid email format |
-| 7 | 5, Priya, (spaces) | Invalid | missing email |
-| 8 | 1, Shreya (repeat) | Invalid | duplicate ID |
-
-Edge cases covered by tests: spaces-only email, double `@`, domain with no dot, a record with no `email` key at all, and a repeated ID whose first row was rejected.
-
-## Results
-
-```
-Valid: 2
-Invalid: 5
-  line 3: ID 2 (Amit): missing email
-  line 5: ID 2 (Amit): missing email; duplicate ID
-  line 6: ID 4 (Ravi): invalid email format
-  line 7: ID 5 (Priya): missing email
-  line 8: ID 1 (Shreya): duplicate ID
+```text
+customer-data-cleaner-v2/
+├── data/
+│   ├── customers.csv
+│   └── customers_messy_headers.csv
+├── output/
+│   ├── valid_customers.csv
+│   ├── invalid_customers.csv
+│   └── customers.db
+├── cleaner.py
+├── test_cleaner.py
+├── README.md
+└── .gitignore
 ```
 
-10 automated tests, all passing.
+The `.venv/` virtual environment and generated cache files are excluded from Git using `.gitignore`. Database files (`*.db`) are also ignored.
 
-Output files:
+## Requirements
 
-- `output/valid_customers.csv`: clean records
-- `output/invalid_customers.csv`: rejected records with `line` and `reason` columns
+- Python 3
+- `pytest` for running automated tests
+- SQLite for database storage
 
-## How to run
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/Monesha-B/customer-data-cleaner-v2.git
+cd customer-data-cleaner-v2
+```
+
+Create a virtual environment:
 
 ```bash
 python3 -m venv .venv
+```
+
+Activate it on macOS or Linux:
+
+```bash
 source .venv/bin/activate
-pip install pytest
+```
+
+Install the testing dependency:
+
+```bash
+python -m pip install pytest
+```
+
+## Usage
+
+### 1. Clean a CSV file
+
+```bash
 python cleaner.py
+```
+
+This processes the default customer dataset.
+
+### 2. Process a CSV with alternative headers
+
+```bash
+python cleaner.py data/customers_messy_headers.csv
+```
+
+The program normalizes supported column names before validating the records.
+
+### 3. Save results to SQLite
+
+```bash
+python cleaner.py data/customers_messy_headers.csv --db output/customers.db
+```
+
+This command cleans the input file, creates or updates the SQLite database, and loads valid customer records into the `customers` table.
+
+### 4. View the output
+
+The program generates:
+
+- `output/valid_customers.csv` — valid customer records.
+- `output/invalid_customers.csv` — records that failed validation.
+
+The terminal reports the number of valid and invalid records and explains why records were rejected.
+
+## Example Output
+
+```text
+Valid: 2
+Invalid: 1
+  line 3: ID 2 (Amit): missing email
+Loaded 2 valid record(s) into output/customers.db
+```
+
+In this example, two records passed validation, one record was rejected because its email was missing, and the two valid records were loaded into SQLite.
+
+## Query the SQLite Database
+
+Open the database:
+
+```bash
+sqlite3 output/customers.db
+```
+
+Display the available tables:
+
+```sql
+.tables
+```
+
+Format the query output:
+
+```sql
+.headers on
+.mode column
+```
+
+View all customer records:
+
+```sql
+SELECT * FROM customers;
+```
+
+Exit SQLite:
+
+```sql
+.exit
+```
+
+## Run Automated Tests
+
+Run the test suite:
+
+```bash
 pytest -v
 ```
 
-## Project structure
+The tests cover the CSV cleaning and validation functionality. The current test suite has passed **33 tests** in the development environment.
 
-```
-customer-data-cleaner-v2/
-├── cleaner.py          # read, validate, split, write
-├── test_cleaner.py     # pytest tests
-├── data/
-│   └── customers.csv   # sample messy input
-├── output/             # generated results
-└── README.md
-```
+## Technologies Used
 
-## Limitations and next steps
+- Python
+- CSV processing
+- SQLite
+- SQL (Structured Query Language)
+- `argparse` for command-line arguments
+- `pytest` for automated testing
+- Git and GitHub for version control
 
-- Column headers must match exactly (`ID`, `name`, `email`). Mapping variants like `e-mail` or `E_MAIL` to one standard name is not built yet.
-- The email check is a basic structural check, not full email validation.
-- Only CSV input is supported.
-- Results are written to files. Loading into a database is not part of this project yet.
+## Learning Outcomes
+
+This project demonstrates practical experience with:
+
+- Data cleaning and validation
+- Handling inconsistent CSV headers
+- Identifying missing, invalid, and duplicate data
+- File input/output
+- Relational database basics
+- Writing and running automated tests
+- Command-line tools and Git workflows
+
+## Future Improvements
+
+- Add structured logging.
+- Generate data-quality summary reports.
+- Support configurable validation rules.
+- Add database queries for reporting and analysis.
+- Improve test coverage for edge cases.
+
+## Author
+
+Monesha Balasambandam
+
+GitHub: [Monesha-B](https://github.com/Monesha-B)
