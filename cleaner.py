@@ -1,7 +1,41 @@
 import csv
 import os
+import sys
 
 REQUIRED_FIELDS = ["ID", "name", "email"]
+
+# Cleaned header names (left) -> standard names (right)
+HEADER_ALIASES = {
+    "id": "ID",
+    "customerid": "ID",
+    "name": "name",
+    "fullname": "name",
+    "email": "email",
+    "emailaddress": "email",
+}
+
+
+def normalize_header(header):
+    """Lowercase, trim, and remove '-', '_' and spaces."""
+    return (
+        header.strip()
+        .lower()
+        .replace("-", "")
+        .replace("_", "")
+        .replace(" ", "")
+    )
+
+
+def map_record(record):
+    """Rename a row's keys to the standard names. Unknown columns are ignored."""
+    mapped = {}
+    for key, value in record.items():
+        if key is None:  # DictReader uses None for extra values with no header
+            continue
+        standard = HEADER_ALIASES.get(normalize_header(key))
+        if standard:
+            mapped[standard] = value
+    return mapped
 
 
 def read_customers(path):
@@ -26,7 +60,7 @@ def validate_record(record, seen_ids):
         if len(parts) != 2 or parts[0] == "" or "." not in parts[1]:
             reasons.append("invalid email format")
 
-    # 3. Duplicate ID (Rule A: any ID seen earlier counts)
+    # 3. Duplicate ID (any ID seen earlier counts)
     cust_id = (record.get("ID") or "").strip()
     if cust_id and cust_id in seen_ids:
         reasons.append("duplicate ID")
@@ -60,9 +94,13 @@ def write_csv(path, rows, fieldnames):
 
 
 def main():
+    path = sys.argv[1] if len(sys.argv) > 1 else "data/customers.csv"
     os.makedirs("output", exist_ok=True)
 
-    records = read_customers("data/customers.csv")
+    records = []
+    for raw in read_customers(path):
+        records.append(map_record(raw))
+
     valid, invalid = clean_customers(records)
 
     write_csv("output/valid_customers.csv", valid, REQUIRED_FIELDS)
